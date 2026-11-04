@@ -1,0 +1,1236 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Stream Chat + Rumble</title>
+<style>
+	/* Colours approximate Caffeinated's dark / light themes (Radix mauve + crimson). */
+	:root {
+		--base1: #121113; --base2: #1a191b; --base3: #232225; --base4: #2b292d; --base5: #323035;
+		--base6: #3c393f; --base7: #49474e; --base8: #625f69; --base9: #6f6d78; --base10: #7c7a85;
+		--base11: #b5b2bc; --base12: #eeeef0;
+		--primary3: #381525; --primary5: #5c1839; --primary7: #873356; --primary8: #b0436e;
+		--primary9: #e93d82; --primary11: #ff92ad;
+		--error: #ff6369; --link: #70b8ff;
+		color-scheme: dark;
+	}
+	:root[data-appearance="LIGHT"] {
+		--base1: #fdfcfd; --base2: #faf9fb; --base3: #f2eff3; --base4: #eae7ec; --base5: #e3dfe6;
+		--base6: #dbd8e0; --base7: #d0cdd7; --base8: #bcbac7; --base9: #8e8c99; --base10: #84828e;
+		--base11: #65636d; --base12: #211f26;
+		--primary3: #feeaf1; --primary5: #f9d8e7; --primary7: #e9a5c5; --primary8: #e093b2;
+		--primary9: #e93d82; --primary11: #cb1d63;
+		--error: #dc3e42; --link: #0d74ce;
+		color-scheme: light;
+	}
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; background: transparent; color: var(--base12);
+		font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif; font-size: 16px; }
+	button, input, select, textarea { font: inherit; color: inherit; }
+	a { color: inherit; text-decoration: none; }
+
+	#root { height: 100vh; display: flex; flex-direction: column; padding: 8px 8px 4px; position: relative; overflow: hidden; }
+	#scroller { flex: 1; overflow-x: hidden; overflow-y: auto; }
+
+	/* User message history (click a name) */
+	#history { flex: 1; min-height: 0; display: none; flex-direction: column; }
+	#root.viewing-history #history { display: flex; }
+	#root.viewing-history #scroller, #root.viewing-history #jump { display: none !important; }
+	#history-head { display: flex; align-items: center; gap: .5rem; padding: .25rem 0 .5rem; border-bottom: 1px solid var(--base6); margin-bottom: .375rem; }
+	#history-back, #history-profile { flex: 0 0 auto; background: var(--base3); border: 1px solid var(--base6); border-radius: .375rem; cursor: pointer; padding: .25rem; line-height: 0; color: var(--base12); }
+	#history-back:hover, #history-profile:hover { background: var(--base5); border-color: var(--base8); }
+	#history-back svg, #history-profile svg { width: 20px; height: 20px; }
+	#history-avatar { flex: 0 0 auto; width: 2.5rem; height: 2.5rem; border-radius: 50%; object-fit: cover; background: var(--base5); display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff; overflow: hidden; }
+	#history-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+	#history-id { flex: 1; min-width: 0; line-height: 1.3; }
+	#history-id .who { font-size: 1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	#history-id .who b { font-weight: 600; color: var(--primary11); }
+	.color-by-platform #history-id .who b { color: var(--platform-color, var(--primary11)); }
+	.color-by-user #history-id .who b { color: var(--user-color, var(--primary11)); }
+	#history-id .who .user-platform { display: inline-block; }
+	#history-id .who .richmessage-badges { display: unset; }
+	#history-id .sub { font-size: .75rem; color: var(--base11); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	#history-scroller { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; }
+	#history-list { list-style: none; margin: 0; padding: 0; }
+	#history-empty { display: none; color: var(--base11); font-size: .875rem; padding: .5rem 0; }
+	/* Like the stock popup: always show timestamps, badges and platform in a user's history. */
+	#history .message-container { --timestamp-width: 11ch; }
+	#history .message-timestamp { display: inline-block; width: var(--timestamp-width); padding-right: 5px; }
+	#history .richmessage-badges { display: unset; }
+	#history .user-platform { display: inline-block; }
+	#chat a[data-upid]:hover, #history-list a[data-upid]:hover { text-decoration: underline; }
+	#chat { list-style: none; margin: 0; padding: 0; }
+
+	/* Messages (mirrors the stock dock's CSS) */
+	.message-container { display: block; white-space: nowrap; width: 100%; overflow: hidden; border-radius: .375rem; line-height: 1.5; }
+	.message-content { width: calc(100% - var(--timestamp-width, 0px)); display: inline-block; white-space: normal; overflow-wrap: anywhere; }
+	#chat b, #history-list b { font-weight: 600; color: var(--primary11); }
+	.color-by-platform #chat b, .color-by-platform #history-list b { color: var(--platform-color, var(--primary11)); }
+	.color-by-user #chat b, .color-by-user #history-list b { color: var(--user-color, var(--primary11)); }
+	.user-platform { display: none; width: 1em; height: 1em; margin-right: .125rem; vertical-align: -0.15em; }
+	.user-platform .icon-svg, .target-icon .icon-svg { width: 100%; height: 100%; display: block; }
+	.user-platform .dot { display: block; width: .7em; height: .7em; margin: .15em; border-radius: 50%; background: var(--platform-color, var(--base9)); }
+	.show-platform .user-platform { display: inline-block !important; }
+	.activity-event { display: none !important; }
+	.show-activities .activity-event { display: block !important; }
+	li.highlighted { padding: .5rem; margin: .125rem 0; background-color: var(--primary5); text-shadow: 1px 1px 5px var(--primary3); }
+	.message-timestamp { display: none; user-select: none; font-weight: 625; font-size: .7em; vertical-align: top; text-align: right; transform: translateY(.3rem); opacity: .8; }
+	.show-timestamps .message-container { --timestamp-width: 11ch; }
+	.show-timestamps .message-timestamp { display: inline-block; width: var(--timestamp-width); padding-right: 5px; }
+	.richmessage-badges { display: none; }
+	.richmessage-badges img { display: inline-block; height: 1em; vertical-align: middle; transform: translateY(-0.125rem); margin-right: .25rem; }
+	.show-badges .richmessage-badges { display: unset !important; }
+	.viewer-joinleave { display: none !important; }
+	.show-viewers .viewer-joinleave { display: block !important; }
+	.pronouns { display: none; margin-left: .25rem; font-size: .75rem; padding: 1px .25rem; border-radius: .5rem; background: var(--base6); border: 1px solid var(--base7); color: var(--base11); font-weight: 400; }
+	.show-pronouns .pronouns { display: unset !important; }
+	.show-zebra-stripes #chat > li:nth-child(odd), .show-zebra-stripes #history-list > li:nth-child(odd) { background-color: var(--base4); }
+	.sep { user-select: none; font-weight: 300; }
+	.deleted { opacity: .6; transition: opacity .15s; }
+	.deleted:hover { opacity: 1; }
+	.note { display: block; font-size: .875rem; opacity: .8; margin-top: .125rem; }
+	.richmessage-message [data-rich-type='mention'] { font-weight: 600; }
+	.richmessage-message [data-rich-type='link'] { text-decoration: underline; color: var(--link); }
+	.richmessage-message img { max-height: 1.6em; vertical-align: middle; }
+	.upvote-counter { display: none; font-weight: bold; }
+	.upvote-1 .upvote-counter { color: #ff00ff; display: inline-block; }
+	.upvote-2 .upvote-counter { color: #00ff00; display: inline-block; }
+	.upvote-3 .upvote-counter { color: #ffff00; display: inline-block; }
+	.upvote-4 .upvote-counter { color: #ffffff; display: inline-block; }
+	.platform-message { font-size: .875em; opacity: .9; }
+	li.flash { transition: background-color .75s; background-color: var(--primary8) !important; }
+
+	/* Floating buttons */
+	.fab { position: absolute; right: 12px; border-radius: 9999px; padding: 4px; background: var(--base3); border: 1px solid var(--base6); cursor: pointer; display: none; line-height: 0; }
+	.fab:hover { background: var(--base5); border-color: var(--base8); }
+	.fab svg { width: 24px; height: 24px; }
+	#jump { bottom: 64px; }
+	#skip-tts { top: 24px; }
+	.show { display: block !important; }
+
+	/* Input box */
+	#input-area { flex: 0 0 auto; padding-top: 8px; padding-bottom: 4px; }
+	#reply-bar, #send-error { display: none; font-size: .8rem; padding: 2px 4px 4px; }
+	#reply-bar { color: var(--base11); }
+	#reply-bar button { background: none; border: none; cursor: pointer; color: var(--base11); padding: 0 4px; }
+	#send-error { color: var(--error); }
+	.input-row { display: flex; flex-direction: row; height: 2.375rem; }
+	#target-btn { position: relative; height: 2.375rem; cursor: pointer; border-radius: .375rem 0 0 .375rem; border: 1px solid var(--base7);
+		background: var(--base1); padding: 0 1.75rem 0 .75rem; text-align: left; font-size: .875rem; margin-right: -1px; white-space: nowrap; }
+	#target-btn .chev { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); color: var(--base10); width: 20px; height: 20px; }
+	#target-btn:focus, #message:focus { outline: none; border-color: var(--primary7); box-shadow: 0 0 0 1px var(--primary7); z-index: 1; }
+	.target-icon { width: 1rem; height: 1.25rem; display: inline-block; vertical-align: middle; }
+	.target-icon { padding-top: .125rem; }
+	.target-icon .icon-svg { width: 1rem; height: 1rem; }
+	#target-menu { display: none; position: absolute; bottom: 100%; left: 0; margin-bottom: 4px; z-index: 10; min-width: 100%; max-height: 15rem; overflow: auto;
+		background: var(--base1); border-radius: .375rem; box-shadow: 0 10px 15px -3px rgba(0,0,0,.4); outline: 1px solid var(--base8); padding: 4px 0; font-size: .875rem; }
+	#target-menu.open { display: block; }
+	#target-menu button { display: flex; align-items: center; gap: .4rem; width: 100%; padding: .5rem 2.25rem .5rem .75rem; background: none; border: none; cursor: pointer; position: relative; text-align: left; white-space: nowrap; }
+	#target-menu button:hover, #target-menu button.hl { background: var(--primary9); color: #fff; }
+	#target-menu button.disabled { opacity: .6; cursor: not-allowed; }
+	#target-menu .check { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 20px; height: 20px; color: var(--primary9); }
+	#target-menu button:hover .check { color: #fff; }
+	.target-wrap { position: relative; flex: 0 0 auto; }
+	.msg-wrap { position: relative; flex: 1 1 auto; }
+	#message { display: block; width: 100%; height: 2.375rem; resize: none; padding: .5rem 2.25rem .5rem .625rem; border: 1px solid var(--base7);
+		background: var(--base1); font-size: .875rem; transition: border-color .15s; }
+	#message:hover { border-color: var(--base8); }
+	#message::placeholder { color: var(--base8); }
+	.single #message { border-radius: .375rem 0 0 .375rem; }
+	#cog { position: absolute; top: 8px; right: 8px; background: none; border: none; cursor: pointer; padding: 0; color: var(--base11); line-height: 0; }
+	#cog svg { width: 20px; height: 20px; transition: transform .15s; }
+	#cog.open svg { transform: rotate(45deg); }
+	#send-btn { height: 2.375rem; cursor: pointer; margin-left: -1px; border-radius: 0 .375rem .375rem 0; padding: .375rem .5rem; background: var(--base3);
+		border: 1px solid var(--base6); font-size: .875rem; }
+	#send-btn:hover { background: var(--base5); border-color: var(--base8); }
+	.unsupported { opacity: .6; }
+	#char-count { position: absolute; right: 34px; bottom: 2px; font-size: .65rem; color: var(--base10); pointer-events: none; display: none; }
+	#char-count.over { color: var(--error); }
+
+	/* Context menu */
+	#ctx { display: none; position: fixed; z-index: 30; background: var(--base2); border: 1px solid var(--base7); border-radius: .375rem; padding: 4px 0; min-width: 150px; font-size: .875rem;
+		box-shadow: 0 10px 15px -3px rgba(0,0,0,.4); }
+	#ctx button { display: block; width: 100%; text-align: left; padding: .375rem .75rem; background: none; border: none; cursor: pointer; }
+	#ctx button:hover { background: var(--base5); }
+	#ctx button.danger { color: var(--error); }
+
+	/* Modal */
+	#modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 20; align-items: flex-start; justify-content: center; overflow-y: auto; padding: 1rem; }
+	#modal-bg.open { display: flex; }
+	#modal { background: var(--base2); border-radius: .5rem; padding: 1rem 1.25rem; width: 100%; max-width: 22rem; box-shadow: 0 20px 25px -5px rgba(0,0,0,.5); }
+	#modal h2 { margin: 0 0 .5rem; font-size: 1.25rem; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+	#modal h3 { margin: 1rem 0 .25rem; font-size: 1rem; font-weight: 600; }
+	#close-modal { background: none; border: none; cursor: pointer; padding: 0; line-height: 0; color: var(--base12); }
+	#close-modal svg { width: 24px; height: 24px; }
+	.prefs { list-style: none; margin: 0; padding: 0; }
+	.prefs > li { padding: .5rem 0; border-top: 1px solid var(--base6); }
+	.prefs > li:first-child { border-top: none; }
+	.row { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+	.row span { font-size: .875rem; font-weight: 500; }
+	.lbl { display: block; font-size: .875rem; font-weight: 500; margin-bottom: .375rem; }
+	select, .field { width: 100%; padding: .375rem .625rem; border-radius: .375rem; border: 1px solid var(--base7); background: var(--base1); font-size: .875rem; }
+	select:focus, .field:focus { outline: none; border-color: var(--primary7); box-shadow: 0 0 0 1px var(--primary7); }
+	input[type=range] { width: 100%; accent-color: var(--primary9); }
+	.switch { position: relative; width: 2.75rem; height: 1.5rem; flex: 0 0 auto; }
+	.switch input { opacity: 0; width: 0; height: 0; }
+	.switch i { position: absolute; inset: 0; border-radius: 9999px; background: var(--base8); cursor: pointer; transition: background .15s; }
+	.switch i::before { content: ""; position: absolute; width: 1.25rem; height: 1.25rem; left: .125rem; top: .125rem; border-radius: 50%; background: #fff; transition: transform .15s; }
+	.switch input:checked + i { background: var(--primary9); }
+	.switch input:checked + i::before { transform: translateX(1.25rem); }
+	.btn { display: inline-block; padding: .375rem .75rem; border-radius: .375rem; border: 1px solid var(--base6); background: var(--base3); cursor: pointer; font-size: .875rem; margin-top: .5rem; }
+	.btn:hover { background: var(--base5); }
+	.btn.primary { background: var(--primary9); border-color: var(--primary9); color: #fff; }
+	.btn.danger { color: var(--error); }
+	.hint { font-size: .8rem; color: var(--base11); margin: .375rem 0; line-height: 1.4; }
+	.hint code { background: var(--base4); padding: 0 .25rem; border-radius: .25rem; }
+	.warning { font-size: .82rem; font-weight: 700; line-height: 1.45; margin: .5rem 0; padding: .5rem .625rem; border-radius: .375rem; background: var(--base4); border-left: 3px solid var(--primary9); }
+	#acc-status { font-size: .85rem; margin: .25rem 0 .5rem; }
+	#acc-status.ok { color: #46a758; }
+	#acc-status.err { color: var(--error); }
+	.acc-mode { display: none; }
+	.acc-mode.open { display: block; }
+	.stack > * + * { margin-top: .375rem; }
+</style>
+</head>
+<body>
+<div id="root" class="show-badges show-platform">
+	<div id="scroller"><ul id="chat"></ul></div>
+
+	<div id="history" aria-label="Message history">
+		<div id="history-head">
+			<button id="history-back" title="Back to chat (Esc)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18"/></svg></button>
+			<div id="history-avatar"></div>
+			<div id="history-id"><div class="who"></div><div class="sub"></div></div>
+			<button id="history-profile" title="Open their profile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/></svg></button>
+		</div>
+		<div id="history-scroller"><ul id="history-list"></ul><div id="history-empty">No messages from them in this session yet.</div></div>
+	</div>
+
+	<button id="skip-tts" class="fab" title="Skip message"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M5.055 7.06C3.805 6.347 2.25 7.25 2.25 8.69v8.122c0 1.44 1.555 2.343 2.805 1.628L12 14.471v2.34c0 1.44 1.555 2.343 2.805 1.628l7.108-4.061c1.26-.72 1.26-2.536 0-3.256l-7.108-4.061C13.555 6.346 12 7.249 12 8.689v2.34L5.055 7.061z"/></svg></button>
+	<button id="jump" class="fab" title="Jump to the newest message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m0 0l6.75-6.75M12 19.5l-6.75-6.75"/></svg></button>
+
+	<div id="input-area">
+		<div id="reply-bar"><span id="reply-text"></span><button id="reply-cancel" title="Cancel reply">✕</button></div>
+		<div id="send-error"></div>
+		<div class="input-row" id="input-row">
+			<div class="target-wrap">
+				<button id="target-btn" type="button" aria-haspopup="listbox"><span id="target-label"></span>
+					<svg class="chev" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 3a.75.75 0 01.55.24l3.25 3.5a.75.75 0 11-1.1 1.02L10 4.852 7.3 7.76a.75.75 0 01-1.1-1.02l3.25-3.5A.75.75 0 0110 3zm-3.76 9.2a.75.75 0 011.06.04l2.7 2.908 2.7-2.908a.75.75 0 111.1 1.02l-3.25 3.5a.75.75 0 01-1.1 0l-3.25-3.5a.75.75 0 01.04-1.06z" clip-rule="evenodd"/></svg>
+				</button>
+				<div id="target-menu" role="listbox"></div>
+			</div>
+			<div class="msg-wrap">
+				<textarea id="message" rows="1" placeholder="Send a message"></textarea>
+				<span id="char-count"></span>
+				<button id="cog" title="Chat preferences"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12a7.5 7.5 0 0015 0m-15 0a7.5 7.5 0 1115 0m-15 0H3m16.5 0H21m-1.5 0H12m-8.457 3.077l1.41-.513m14.095-5.13l1.41-.513M5.106 17.785l1.15-.964m11.49-9.642l1.149-.964M7.501 19.795l.75-1.3m7.5-12.99l.75-1.3m-6.063 16.658l.26-1.477m2.605-14.772l.26-1.477m0 17.726l-.26-1.477M10.698 4.614l-.26-1.477M16.5 19.794l-.75-1.299M7.5 4.205L12 12m6.894 5.785l-1.149-.964M6.256 7.178l-1.15-.964m15.352 8.864l-1.41-.513M4.954 9.435l-1.41-.514M12.002 12l-3.75 6.495"/></svg></button>
+			</div>
+			<button id="send-btn" type="button">Send</button>
+		</div>
+	</div>
+</div>
+
+<div id="ctx"></div>
+
+<div id="modal-bg">
+	<div id="modal" role="dialog">
+		<h2>Chat Preferences <button id="close-modal" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg></button></h2>
+		<ul class="prefs">
+			<li><label class="lbl" for="p-colorBy">Color users by</label>
+				<select id="p-colorBy"><option value="THEME">App Primary Theme</option><option value="USER">User Color</option><option value="PLATFORM">Streaming Platform</option></select></li>
+			<li class="row"><span>Ding when a new message comes in</span><label class="switch"><input type="checkbox" id="p-playDingOnMessage"><i></i></label></li>
+			<li class="row"><span>Read messages out loud</span><label class="switch"><input type="checkbox" id="p-readMessagesAloud"><i></i></label></li>
+			<li id="li-voice"><label class="lbl" for="p-ttsVoice">TTS Voice</label><select id="p-ttsVoice"></select></li>
+			<li id="li-volume"><label class="lbl" for="p-ttsOrDingVolume">TTS/Ding volume</label><input type="range" id="p-ttsOrDingVolume" min="0" max="1" step="0.01"></li>
+			<li><label class="lbl" for="p-textSize">Text Size</label><input type="range" id="p-textSize" min="0.1" max="2" step="0.01"></li>
+			<li class="row"><span>Show timestamps</span><label class="switch"><input type="checkbox" id="p-showChatTimestamps"><i></i></label></li>
+			<li class="row"><span>Show badges</span><label class="switch"><input type="checkbox" id="p-showBadges"><i></i></label></li>
+			<li class="row"><span>Show viewer join/leave messages</span><label class="switch"><input type="checkbox" id="p-showViewers"><i></i></label></li>
+			<li class="row"><span>Show the user's platform</span><label class="switch"><input type="checkbox" id="p-showPlatform"><i></i></label></li>
+			<li class="row"><span>Show Activities (follows, subs, etc)</span><label class="switch"><input type="checkbox" id="p-showActivities"><i></i></label></li>
+			<li class="row"><span>Show the user's pronouns</span><label class="switch"><input type="checkbox" id="p-showPronouns"><i></i></label></li>
+			<li class="row"><span>Use alternating message backgrounds</span><label class="switch"><input type="checkbox" id="p-showZebraStripes"><i></i></label></li>
+		</ul>
+
+		<h3>Rumble account (for sending)</h3>
+		<div id="acc-status"></div>
+		<label class="lbl" for="acc-mode">Send to Rumble using</label>
+		<select id="acc-mode">
+			<option value="off">Off (read-only)</option>
+			<option value="cookie">Browser session cookie</option>
+			<option value="password">Username &amp; password (auto re-login)</option>
+		</select>
+
+		<div class="acc-mode stack" id="acc-cookie">
+			<p class="hint">Log in on rumble.com in your browser, press <code>F12</code> → <b>Application</b> (Chrome/Edge) or <b>Storage</b> (Firefox) → <b>Cookies</b> → <code>https://rumble.com</code>, and copy the value of <code>u_s</code>.
+				It's encrypted on this PC. It stops working if you log out of rumble.com; just paste a new one then.</p>
+			<input class="field" type="password" id="acc-cookie-value" placeholder="u_s cookie value" autocomplete="off">
+			<button class="btn primary" id="acc-cookie-save">Save cookie</button>
+		</div>
+
+		<div class="acc-mode stack" id="acc-password">
+			<div class="warning">
+				What this option does: the plugin logs in to Rumble as you, the same way rumble.com's login page does, so it can post chat messages from your account and log back in by itself whenever the session expires.
+				<br><br>Your username and password are stored only on this PC, in <code>%APPDATA%\casterlabs-caffeinated\rumble-chat\account.json</code>, and the password is encrypted with Windows' built-in protection (DPAPI) so only your Windows user account can decrypt it. Anyone who can use your Windows account could use it.
+				<br><br>Your password is only ever sent to rumble.com (as the salted hashes Rumble's own login uses). It is never logged, and never sent to Casterlabs or anyone else.
+				<br><br>If your Rumble account has 2FA, you'll be asked for a code whenever Rumble needs a fresh login. Rumble's login and chat endpoints are unofficial and may change. Use "Forget Rumble login" to delete everything at any time.
+			</div>
+			<input class="field" type="text" id="acc-username" placeholder="Rumble username" autocomplete="off">
+			<input class="field" type="password" id="acc-password-value" placeholder="Rumble password" autocomplete="off">
+			<button class="btn primary" id="acc-password-save">Save &amp; log in</button>
+		</div>
+
+		<div class="acc-mode stack" id="acc-2fa">
+			<label class="lbl">Rumble 2FA code</label>
+			<p class="hint" id="acc-2fa-hint"></p>
+			<div id="acc-2fa-send"></div>
+			<input class="field" type="text" id="acc-2fa-code" inputmode="numeric" placeholder="123456" autocomplete="one-time-code">
+			<button class="btn primary" id="acc-2fa-save">Verify</button>
+		</div>
+
+		<button class="btn danger" id="acc-forget">Forget Rumble login</button>
+	</div>
+</div>
+
+<script>
+(function () {
+	'use strict';
+
+	/* ------------------------------------------------------------------ */
+	/* Constants                                                          */
+	/* ------------------------------------------------------------------ */
+
+	const MAX_EVENTS_DISPLAY = 400;
+	const AT_BOTTOM_PX = 40; // "At the bottom" = within this many pixels of the end.
+
+	// Same platform colours as Caffeinated's streamingServices.mjs, plus Rumble.
+	const PLATFORM_COLORS = {
+		TWITCH: '#8838ff', TROVO: '#149b53', YOUTUBE: '#ff0000', DLIVE: '#ccc121', KICK: '#53fc18',
+		TIKTOK: '#e5004e', LOCO: '#ff5a12', CUSTOM_INTEGRATION: '#00aff1', RUMBLE: '#85c742'
+	};
+	const PLATFORM_NAMES = {
+		TWITCH: 'Twitch', YOUTUBE: 'YouTube', KICK: 'Kick', TIKTOK: 'TikTok', TROVO: 'Trovo', DLIVE: 'DLive',
+		LOCO: 'Loco', RUMBLE: 'Rumble', CUSTOM_INTEGRATION: 'Custom Integration'
+	};
+
+	const DEFAULT_PREFS = {
+		colorBy: 'THEME', playDingOnMessage: false, readMessagesAloud: false, ttsVoice: 'Google Translate English',
+		ttsOrDingVolume: 0.5, textSize: 1, showChatTimestamps: true, showBadges: true, showViewers: false,
+		showPlatform: true, showActivities: false, showPronouns: false, showZebraStripes: false,
+		inputBoxPreferences: {}
+	};
+
+	/* ------------------------------------------------------------------ */
+	/* State                                                              */
+	/* ------------------------------------------------------------------ */
+
+	const $ = (id) => document.getElementById(id);
+	const root = $('root'), scroller = $('scroller'), chatBox = $('chat');
+
+	let prefs = Object.assign({}, DEFAULT_PREFS);
+	let userStates = {};
+	let features = {};
+	let rc = { account: { mode: 'off', ready: false }, connected: false, icon: null, dink: null, max_length: 200 };
+
+	let target = null; // null = All, otherwise a platform name.
+	let replyTarget = null; // The event being replied to.
+	let isAtBottom = true;
+
+	const chatElements = {}; // meta_id -> { element, event, refresh }
+	const knownUsers = {}; // UPID -> latest user object seen
+	const chatHistory = []; // { element, event }
+
+	const messageHistory = [];
+	let historyIndex = -1;
+	let messageEdited = false;
+
+	/* ------------------------------------------------------------------ */
+	/* Helpers                                                            */
+	/* ------------------------------------------------------------------ */
+
+	function esc(s) {
+		return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+	}
+
+	function platformIcon(platform, cls) {
+		const p = String(platform || '').toUpperCase();
+		const color = PLATFORM_COLORS[p] || 'var(--base9)';
+		// Filled in by hydrateIcons(): Caffeinated's own icon SVG, inlined and coloured
+		// with the platform colour (same as the stock dock). Rumble uses your icon.
+		return `<span class="${cls}" data-icon-p="${esc(p.toLowerCase())}" style="--platform-color:${color};color:${color}" title="${esc(PLATFORM_NAMES[p] || p)}"></span>`;
+	}
+
+	const iconCache = {};
+	function loadIcon(p) {
+		if (!iconCache[p]) {
+			iconCache[p] = fetch(`icons/${p}.svg`)
+				.then((r) => (r.ok ? r.text() : null))
+				.then((t) => (t && t.includes('<svg') ? t.replace('<svg', '<svg class="icon-svg"') : null))
+				.catch(() => null);
+		}
+		return iconCache[p];
+	}
+
+	function hydrateIcons(rootEl) {
+		const els = rootEl.querySelectorAll ? rootEl.querySelectorAll('[data-icon-p]:not([data-icon-done])') : [];
+		for (const el of els) {
+			el.setAttribute('data-icon-done', '1');
+			const p = el.getAttribute('data-icon-p');
+			loadIcon(p).then((svg) => { el.innerHTML = svg || '<span class="dot"></span>'; });
+		}
+	}
+
+	new MutationObserver((records) => {
+		for (const r of records) for (const n of r.addedNodes) if (n.nodeType === 1) hydrateIcons(n.parentNode || n);
+	}).observe(document.body, { childList: true, subtree: true });
+
+	function pronounsText(p) {
+		if (!p || p === 'UNKNOWN') return '';
+		return String(p).toLowerCase().split('_').join('/');
+	}
+
+	function userHtml(user) {
+		if (!user) return '';
+		const displayString = String(user.displayname || '').toLowerCase() === String(user.username || '').toLowerCase()
+			? esc(user.displayname)
+			: `${esc(user.displayname)} <span style="opacity:60%;font-size:75%;">(${esc(user.username)})</span>`;
+
+		// The plugin adds your Rumble icon as a badge for the stock chat; here it goes in the platform slot instead.
+		const badges = (user.badges || []).filter((b) => !(rc.icon && b === rc.icon));
+		const pronouns = pronounsText(user.pronouns);
+
+		return `<span class="richmessage-badges" aria-hidden="true">${badges.map((b) => `<img alt="" src="${esc(b)}">`).join('')}</span>`
+			+ `<b style="--platform-color:${PLATFORM_COLORS[user.platform] || 'var(--primary11)'};--user-color:${esc(user.color || '')}">`
+			+ platformIcon(user.platform, 'user-platform')
+			+ `<a href="#" data-upid="${esc(user.UPID || '')}" title="Show message history">${displayString}</a>`
+			+ (pronouns ? `<span class="pronouns">${esc(pronouns)}</span>` : '')
+			+ `</b>`;
+	}
+
+	const SEP = '<span aria-hidden="true"><span class="sep"> : </span></span>';
+
+	function bold(user, text) {
+		return `<b style="--platform-color:${PLATFORM_COLORS[user && user.platform] || 'var(--primary11)'};--user-color:${esc((user && user.color) || '')}">${esc(text)}</b>`;
+	}
+
+	function subscriptionText(e) {
+		const tier = { TIER_1: 'Tier 1', TIER_2: 'Tier 2', TIER_3: 'Tier 3', TIER_4: 'Tier 4', TIER_5: 'Tier 5', TWITCH_PRIME: 'Twitch Prime' }[e.sub_level];
+		const purchased = Number(e.months_purchased || 0), streak = Number(e.months_streak || 0);
+		const name = userHtml(e.subscriber) || 'Anonymous';
+		const u = e.gift_recipient || e.subscriber;
+		let s;
+		if (['SUB', 'RESUB'].includes(e.sub_type)) {
+			s = `${name} just subscribed`;
+			if (tier) s += e.sub_level === 'TWITCH_PRIME' ? ' with Twitch Prime' : ` at ${tier}`;
+			if (purchased > 1) s += ` for ${bold(u, purchased)} months`;
+		} else {
+			s = `${name} just gifted ${userHtml(e.gift_recipient)}`;
+			s += purchased > 1 ? ` a ${bold(u, purchased)} month` : ' a';
+			if (tier) s += ` ${tier}`;
+			s += ' subscription';
+		}
+		if (streak > 1) s += `! They have been subscribed for ${bold(u, streak)} months`;
+		return s + '!';
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* Rendering                                                          */
+	/* ------------------------------------------------------------------ */
+
+	function renderContent(event) {
+		switch (event.event_type) {
+			case 'RICH_MESSAGE': {
+				let html = '';
+				const attrs = event.attributes || [];
+				if (attrs.includes('FIRST_TIME_CHATTER')) html += '<span class="note">🎂 First time chatter</span>';
+				if (attrs.includes('ANNOUNCEMENT')) html += '<span class="note">📣 Announcement</span>';
+				if (event.reply_target) {
+					const t = chatElements[event.reply_target];
+					html += t
+						? `<a href="#" class="note" data-jump="${esc(event.reply_target)}">↩ Replying to ${userHtml(t.event.sender)}${SEP}${t.event.html || ''}</a>`
+						: '<span class="note">↩ Replying to another message.</span>';
+				}
+				const up = Number(event.upvotes || 0);
+				const upCls = (up > 0 ? ' upvote-1' : '') + (up > 10 ? ' upvote-2' : '') + (up > 100 ? ' upvote-3' : '') + (up > 1000 ? ' upvote-4' : '');
+				const body = `<span class="richmessage-message${upCls}">${event.html || esc(event.raw)}</span>`;
+				if (attrs.includes('RP_ACTION')) {
+					html += `<i>${userHtml(event.sender)}${SEP}${body}</i>`;
+				} else {
+					html += `${userHtml(event.sender)}${SEP}${body}`;
+				}
+				return html;
+			}
+			case 'SUBSCRIPTION':
+				return subscriptionText(event);
+			case 'FOLLOW':
+				return `${userHtml(event.follower)} just followed!`;
+			case 'RAID':
+				return Number(event.viewers) < 2
+					? `${userHtml(event.host)} just raided the channel!`
+					: `${userHtml(event.host)} just raided the channel with ${bold(event.host, event.viewers)} viewers!`;
+			case 'CHANNEL_POINTS': {
+				const r = event.reward || {};
+				const img = r.reward_image || r.default_reward_image;
+				let s = `${userHtml(event.sender)} just redeemed ${img ? `<img alt="" src="${esc(img)}" style="display:inline-block;height:.8em">` : ''} ${esc(r.title)}!`;
+				if (event.prompt) s += ` ${esc(event.prompt)}: ${event.message ? esc(event.message) : '<i style="opacity:.9">No message provided</i>'}`;
+				return s;
+			}
+			case 'VIEWER_JOIN':
+				return `${userHtml(event.viewer)} joined.`;
+			case 'VIEWER_LEAVE':
+				return `${userHtml(event.viewer)} left.`;
+			case 'CLEARCHAT':
+				return '<i>Chat was cleared.</i>';
+			case 'PLATFORM_MESSAGE':
+				return `<small class="platform-message">${platformIcon(event.streamer && event.streamer.platform, 'target-icon')} &gt; <i>${event.html || esc(event.raw)}</i></small>`;
+			default:
+				return null;
+		}
+	}
+
+	function userOf(event) {
+		return event.sender || event.follower || event.subscriber || event.host || event.viewer || null;
+	}
+
+	function mountEvent(event, listEl) {
+		const content = renderContent(event);
+		if (content == null) return null;
+
+		const li = document.createElement('li');
+		li.className = 'message-container';
+		li.innerHTML = `<span class="message-timestamp">${esc(new Date(event.timestamp || Date.now()).toLocaleTimeString())}</span>`
+			+ `<span class="message-content">${content}</span>`;
+
+		if ((event.attributes || []).includes('HIGHLIGHTED') || (event.donations || []).length > 0 || ['SUBSCRIPTION', 'RAID'].includes(event.event_type)) {
+			li.classList.add('highlighted');
+		}
+		switch (event.event_type) {
+			case 'VIEWER_JOIN': case 'VIEWER_LEAVE':
+				li.classList.add('viewer-joinleave'); break;
+			case 'RICH_MESSAGE':
+				if ((event.donations || []).length > 0) li.classList.add('activity-event'); break;
+			case 'CHANNEL_POINTS': case 'SUBSCRIPTION': case 'FOLLOW': case 'RAID':
+				li.classList.add('activity-event'); break;
+		}
+		if (event.is_visible === false) li.classList.add('deleted');
+
+		li._event = event;
+		if (event.meta_id) li.setAttribute('data-meta', event.meta_id);
+		(listEl || chatBox).appendChild(li);
+		return li;
+	}
+
+	function processEvent(event) {
+		if (!event || typeof event !== 'object' || !event.event_type) return;
+
+		switch (event.event_type) {
+			case 'META': {
+				const el = chatElements[event.meta_id];
+				if (el) {
+					el.event.upvotes = event.upvotes;
+					el.event.is_visible = event.is_visible;
+				}
+				// Update the message in the chat AND in an open user history.
+				for (const li of document.querySelectorAll('li[data-meta]')) {
+					if (li.getAttribute('data-meta') !== event.meta_id) continue;
+					li.classList.toggle('deleted', event.is_visible === false);
+					const msg = li.querySelector('.richmessage-message');
+					if (msg) {
+						const up = Number(event.upvotes || 0);
+						msg.classList.toggle('upvote-1', up > 0); msg.classList.toggle('upvote-2', up > 10);
+						msg.classList.toggle('upvote-3', up > 100); msg.classList.toggle('upvote-4', up > 1000);
+						const counter = msg.querySelector('.upvote-counter');
+						if (counter) counter.textContent = up;
+					}
+				}
+				return;
+			}
+			case 'CLEARCHAT': {
+				if (event.user_upid) {
+					for (const { element, event: e } of Object.values(chatElements)) {
+						const u = e.sender || e.follower || e.subscriber || e.host || e.viewer || e.gift_recipient;
+						if (u && u.UPID === event.user_upid) element.classList.add('deleted');
+					}
+					if (historyUpid === event.user_upid) historyList.querySelectorAll('li').forEach((li) => li.classList.add('deleted'));
+					break;
+				}
+				for (const { element } of Object.values(chatElements)) element.classList.add('deleted');
+				// Fall through to show "Chat was cleared."
+			}
+			// eslint-disable-next-line no-fallthrough
+			default: {
+				const li = mountEvent(event);
+				if (!li) return;
+				const who = userOf(event);
+				if (who && who.UPID) knownUsers[who.UPID] = who;
+				// Live-append to an open history of this user.
+				if (historyUpid && who && who.UPID === historyUpid) {
+					const atBottom = historyScroller.scrollHeight - historyScroller.scrollTop - historyScroller.clientHeight <= AT_BOTTOM_PX;
+					mountEvent(event, historyList);
+					$('history-empty').style.display = 'none';
+					if (atBottom) requestAnimationFrame(() => { historyScroller.scrollTop = historyScroller.scrollHeight; });
+				}
+				if (event.meta_id) chatElements[event.meta_id] = { element: li, event };
+				chatHistory.push({ element: li, event });
+				if (chatHistory.length > MAX_EVENTS_DISPLAY) {
+					const old = chatHistory.shift();
+					old.element.remove();
+					if (old.event.meta_id) delete chatElements[old.event.meta_id];
+				}
+			}
+		}
+
+		// Only follow new messages if you were already at the bottom.
+		if (isAtBottom && !root.classList.contains('viewing-history')) jumpToBottom(false);
+
+		if (event.is_historical) return;
+		notify(event);
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* Scrolling                                                          */
+	/* ------------------------------------------------------------------ */
+
+	// Auto-follow only stops when YOU scroll up. New messages making the list
+	// taller (or our own auto-scroll catching up) never turn it off.
+	let lastScrollTop = 0;
+	function checkNearBottom() {
+		// While a user's history is open the chat list is hidden; its scroll
+		// readings are meaningless then, so keep the remembered state.
+		if (root.classList.contains('viewing-history')) return;
+		const top = scroller.scrollTop;
+		const gap = scroller.scrollHeight - top - scroller.clientHeight;
+		if (gap <= AT_BOTTOM_PX) {
+			isAtBottom = true;
+		} else if (top < lastScrollTop - 1) {
+			isAtBottom = false; // Scrolled up.
+		}
+		lastScrollTop = top;
+		$('jump').classList.toggle('show', !isAtBottom);
+	}
+
+	function jumpToBottom(smooth) {
+		requestAnimationFrame(() => {
+			scroller.scrollTo({ top: scroller.scrollHeight + 200, behavior: smooth ? 'smooth' : 'auto' });
+		});
+	}
+
+	scroller.addEventListener('scroll', checkNearBottom, { passive: true });
+	$('jump').addEventListener('click', () => jumpToBottom(true));
+
+	/* ------------------------------------------------------------------ */
+	/* Ding + TTS (same Casterlabs TTS service the stock dock uses)       */
+	/* ------------------------------------------------------------------ */
+
+	let ttsAudio = null;
+	let ttsQueue = [];
+
+	function checkTTSQueue() {
+		if (ttsAudio || ttsQueue.length === 0) return;
+		const message = ttsQueue.shift();
+		ttsAudio = new Audio(`https://api.casterlabs.co/v1/polly?request=speech&voice=${encodeURIComponent(prefs.ttsVoice)}&text=${encodeURIComponent(message)}`);
+		const done = () => { ttsAudio = null; $('skip-tts').classList.remove('show'); checkTTSQueue(); };
+		ttsAudio.addEventListener('ended', done);
+		ttsAudio.addEventListener('error', done);
+		ttsAudio.volume = Number(prefs.ttsOrDingVolume);
+		ttsAudio.play().catch(done);
+		$('skip-tts').classList.add('show');
+	}
+
+	function skipTTS() {
+		if (ttsAudio) { ttsAudio.pause(); ttsAudio = null; }
+		$('skip-tts').classList.remove('show');
+		checkTTSQueue();
+	}
+	$('skip-tts').addEventListener('click', skipTTS);
+
+	function plainText(event) {
+		let text = '', hasLink = false, hasEmotes = false;
+		for (const f of event.fragments || []) {
+			switch (f.type) {
+				case 'TEXT': text += f.raw; break;
+				case 'EMOTE': hasEmotes = true; text += f.emoteName || f.raw; break;
+				case 'EMOJI': hasEmotes = true; break;
+				case 'LINK': hasLink = true; break;
+				case 'MENTION': text += (f.mentioned && f.mentioned.displayname) || f.raw; break;
+			}
+			text += ' ';
+		}
+		if (!(event.fragments || []).length) text = event.raw || '';
+		return { text: text.trim(), hasLink, hasEmotes };
+	}
+
+	function notify(event) {
+		const isActivity = ['CHANNEL_POINTS', 'RICH_MESSAGE', 'SUBSCRIPTION', 'FOLLOW', 'RAID'].includes(event.event_type);
+
+		if (prefs.playDingOnMessage && isActivity && rc.dink) {
+			try {
+				const a = new Audio(rc.dink);
+				a.volume = Number(prefs.ttsOrDingVolume);
+				a.play().catch(() => {});
+			} catch (e) {}
+		}
+
+		if (!prefs.readMessagesAloud) return;
+
+		let message = null;
+		switch (event.event_type) {
+			case 'RICH_MESSAGE': {
+				const name = event.sender && event.sender.displayname;
+				const { text, hasLink, hasEmotes } = plainText(event);
+				if ((event.fragments || []).length === 1 && hasLink) message = `${name} sent a link.`;
+				else if (!text) { if (hasEmotes) message = `${name} sent some emotes.`; }
+				else message = text.endsWith('?') ? `${name} asks ${text}` : `${name} said ${text}`;
+				if ((event.attachments || []).length > 0) ttsQueue.push(`${name} sent an attachment.`);
+				break;
+			}
+			case 'CHANNEL_POINTS': message = `${event.sender.displayname} just redeemed ${(event.reward || {}).title}!`; break;
+			case 'SUBSCRIPTION': {
+				const tmp = document.createElement('div');
+				tmp.innerHTML = subscriptionText(event);
+				message = tmp.textContent; break;
+			}
+			case 'FOLLOW': message = `${event.follower.displayname} just followed!`; break;
+			case 'RAID': message = `${event.host.displayname} just raided the channel with ${event.viewers} viewers!`; break;
+		}
+		if (message) { ttsQueue.push(message); checkTTSQueue(); }
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* Preferences                                                        */
+	/* ------------------------------------------------------------------ */
+
+	const SWITCHES = ['playDingOnMessage', 'readMessagesAloud', 'showChatTimestamps', 'showBadges', 'showViewers', 'showPlatform', 'showActivities', 'showPronouns', 'showZebraStripes'];
+
+	function applyPrefs() {
+		root.classList.toggle('show-timestamps', !!prefs.showChatTimestamps);
+		root.classList.toggle('show-badges', !!prefs.showBadges);
+		root.classList.toggle('show-viewers', !!prefs.showViewers);
+		root.classList.toggle('show-platform', !!prefs.showPlatform);
+		root.classList.toggle('show-activities', !!prefs.showActivities);
+		root.classList.toggle('show-pronouns', !!prefs.showPronouns);
+		root.classList.toggle('show-zebra-stripes', !!prefs.showZebraStripes);
+		root.classList.toggle('color-by-platform', prefs.colorBy === 'PLATFORM');
+		root.classList.toggle('color-by-user', prefs.colorBy === 'USER');
+		chatBox.style.fontSize = `${(Number(prefs.textSize) || 1) * 100}%`;
+		const hl = document.getElementById('history-list');
+		if (hl) hl.style.fontSize = chatBox.style.fontSize;
+		$('li-voice').style.display = prefs.readMessagesAloud ? '' : 'none';
+		$('li-volume').style.display = (prefs.readMessagesAloud || prefs.playDingOnMessage) ? '' : 'none';
+		if (isAtBottom) jumpToBottom(false);
+	}
+
+	function syncPrefInputs() {
+		$('p-colorBy').value = prefs.colorBy;
+		$('p-ttsVoice').value = prefs.ttsVoice;
+		$('p-ttsOrDingVolume').value = prefs.ttsOrDingVolume;
+		$('p-textSize').value = prefs.textSize;
+		for (const k of SWITCHES) $('p-' + k).checked = !!prefs[k];
+	}
+
+	function savePrefs() {
+		if (!prefs.readMessagesAloud) { ttsQueue = []; skipTTS(); }
+		prefs.inputBoxPreferences = Object.assign({}, prefs.inputBoxPreferences, { platform: target });
+		applyPrefs();
+		try { Widget.emit('savePreferences', prefs); } catch (e) {}
+	}
+
+	for (const k of SWITCHES) $('p-' + k).addEventListener('change', (e) => { prefs[k] = e.target.checked; savePrefs(); });
+	$('p-colorBy').addEventListener('change', (e) => { prefs.colorBy = e.target.value; savePrefs(); });
+	$('p-ttsVoice').addEventListener('change', (e) => { prefs.ttsVoice = e.target.value; savePrefs(); });
+	$('p-ttsOrDingVolume').addEventListener('change', (e) => { prefs.ttsOrDingVolume = Number(e.target.value); savePrefs(); });
+	$('p-textSize').addEventListener('input', (e) => { prefs.textSize = Number(e.target.value); applyPrefs(); });
+	$('p-textSize').addEventListener('change', (e) => { prefs.textSize = Number(e.target.value); savePrefs(); });
+
+	function loadVoices() {
+		fetch('https://api.casterlabs.co/v3/tts/voices').then((r) => r.json()).then((r) => {
+			const sel = $('p-ttsVoice');
+			const voices = (r.data && r.data.voices) || [];
+			if (!voices.includes(prefs.ttsVoice)) voices.unshift(prefs.ttsVoice);
+			sel.innerHTML = voices.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+			sel.value = prefs.ttsVoice;
+		}).catch(() => setTimeout(loadVoices, 5000));
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* Modal                                                              */
+	/* ------------------------------------------------------------------ */
+
+	function openModal(open) {
+		$('modal-bg').classList.toggle('open', open);
+		$('cog').classList.toggle('open', open);
+		if (open) { syncPrefInputs(); renderAccount(); }
+	}
+	$('cog').addEventListener('click', () => openModal(true));
+	$('close-modal').addEventListener('click', () => openModal(false));
+	$('modal-bg').addEventListener('click', (e) => { if (e.target === $('modal-bg')) openModal(false); });
+	document.addEventListener('keydown', (e) => {
+		if (e.key !== 'Escape') return;
+		if ($('modal-bg').classList.contains('open')) openModal(false);
+		else if (historyUpid && document.activeElement !== $('message')) closeHistory();
+		hideCtx(); closeMenu();
+	});
+
+	/* ------------------------------------------------------------------ */
+	/* Rumble account                                                     */
+	/* ------------------------------------------------------------------ */
+
+	let accModeShown = null;
+
+	function renderAccount(error) {
+		const a = rc.account || {};
+		const st = $('acc-status');
+		if (error) { st.className = 'err'; st.textContent = error; }
+		else if (a.secure_supported === false) { st.className = 'err'; st.textContent = 'Secure storage needs Windows; Rumble sending is unavailable on this system.'; }
+		else if (a.needs_2fa) { st.className = 'err'; st.textContent = a.message || 'Rumble needs a 2FA code to finish logging in.'; }
+		else if (a.ready) { st.className = 'ok'; st.textContent = (a.message || 'Ready.') + (rc.connected ? ' Connected to your live Rumble chat.' : ' (Not live on Rumble right now.)'); }
+		else { st.className = ''; st.textContent = a.message || 'Not set up. Pick how to log in below.'; }
+
+		const mode = accModeShown || a.mode || 'off';
+		$('acc-mode').value = mode;
+		$('acc-cookie').classList.toggle('open', mode === 'cookie');
+		$('acc-password').classList.toggle('open', mode === 'password');
+		$('acc-2fa').classList.toggle('open', !!a.needs_2fa);
+		if (a.needs_2fa) {
+			const opts = a.twofa_options || [];
+			const hints = [];
+			if (opts.includes('authenticator')) hints.push('use the code from your authenticator app');
+			if (opts.includes('email') || opts.includes('phone')) hints.push('have Rumble send you a code');
+			$('acc-2fa-hint').textContent = a.code_sent_to
+				? `Code sent to ${a.code_sent_to}. It can take a minute (check spam).`
+				: (hints.length ? `Either ${hints.join(', or ')}.` : 'Enter your Rumble 2FA code.');
+			$('acc-2fa-send').innerHTML = opts.filter((o) => o === 'email' || o === 'phone')
+				.map((o) => `<button class="btn" data-send-code="${o}">${a.code_sent_to ? 'Resend' : 'Send'} code by ${o === 'email' ? 'email' : 'text message'}</button> `).join('');
+		}
+		if (a.username && !$('acc-username').value) $('acc-username').value = a.username;
+		$('acc-cookie-value').placeholder = a.has_cookie ? 'Saved (paste a new one to replace)' : 'u_s cookie value';
+		$('acc-password-value').placeholder = a.has_password ? 'Saved (type to replace)' : 'Rumble password';
+	}
+
+	function accountAction(data) {
+		$('acc-status').className = '';
+		$('acc-status').textContent = 'Working…';
+		Widget.emit('rc:account', data);
+	}
+
+	$('acc-mode').addEventListener('change', (e) => {
+		accModeShown = e.target.value;
+		if (accModeShown === 'off') { accModeShown = null; accountAction({ action: 'off' }); }
+		renderAccount();
+	});
+	$('acc-cookie-save').addEventListener('click', () => {
+		const v = $('acc-cookie-value').value;
+		$('acc-cookie-value').value = '';
+		accModeShown = null;
+		accountAction({ action: 'cookie', cookie: v });
+	});
+	$('acc-password-save').addEventListener('click', () => {
+		const u = $('acc-username').value, p = $('acc-password-value').value;
+		$('acc-password-value').value = '';
+		accModeShown = null;
+		accountAction({ action: 'password', username: u, password: p });
+	});
+	$('acc-2fa-send').addEventListener('click', (e) => {
+		const b = e.target.closest('[data-send-code]');
+		if (b) accountAction({ action: '2fa_request', option: b.getAttribute('data-send-code') });
+	});
+	$('acc-2fa-save').addEventListener('click', () => {
+		const c = $('acc-2fa-code').value;
+		$('acc-2fa-code').value = '';
+		accountAction({ action: '2fa', code: c });
+	});
+	$('acc-forget').addEventListener('click', () => {
+		if (confirm('Delete the saved Rumble login from this PC?')) { accModeShown = null; accountAction({ action: 'forget' }); }
+	});
+
+	/* ------------------------------------------------------------------ */
+	/* Send target picker (All / each platform / Rumble)                  */
+	/* ------------------------------------------------------------------ */
+
+	function rumbleUsable() {
+		return !!(rc.account && rc.account.ready && rc.connected);
+	}
+
+	function rumbleProblem() {
+		if (!(rc.account && rc.account.ready)) return 'Set up your Rumble account in the dock settings (cog icon) to send to Rumble.';
+		if (!rc.connected) return "Not connected to a live Rumble chat right now.";
+		return null;
+	}
+
+	function targets() {
+		// Real Caffeinated accounts first (same order as the stock dock), then Rumble.
+		const list = [null, ...Object.keys(userStates || {}).filter((p) => p !== 'RUMBLE')];
+		list.push('RUMBLE');
+		return list;
+	}
+
+	function isSupported(p) {
+		if (p == null) return true;
+		if (p === 'RUMBLE') return rumbleUsable();
+		return !!(features[p] || []).includes('CHAT_SEND_MESSAGE');
+	}
+
+	function labelFor(p) {
+		if (p == null) return 'All';
+		return platformIcon(p, 'target-icon');
+	}
+
+	function titleFor(p) {
+		if (p == null) return 'All platforms' + (rumbleUsable() ? ' + Rumble' : '');
+		if (p === 'RUMBLE') return rumbleProblem() || 'Rumble' + (rc.account.username ? ` (${rc.account.username})` : '');
+		const s = userStates[p];
+		return isSupported(p) ? `${PLATFORM_NAMES[p] || p} (${(s && s.streamer && s.streamer.displayname) || ''})` : `${PLATFORM_NAMES[p] || p} doesn't support sending messages.`;
+	}
+
+	let menuHighlighted = null;
+
+	function renderTargets() {
+		const list = targets();
+		if (!list.includes(target)) target = null;
+
+		const btn = $('target-btn');
+		$('target-label').innerHTML = labelFor(target);
+		btn.title = titleFor(target);
+		btn.classList.toggle('unsupported', !isSupported(target));
+
+		const menu = $('target-menu');
+		menu.innerHTML = list.map((p) => {
+			const sel = p === target;
+			return `<button type="button" role="option" data-p="${p == null ? '' : esc(p)}" class="${isSupported(p) ? '' : 'disabled'}${menuHighlighted === p ? ' hl' : ''}" title="${esc(titleFor(p))}" aria-selected="${sel}">`
+				+ `${p == null ? 'All' : platformIcon(p, 'target-icon') + ' ' + esc(PLATFORM_NAMES[p] || p)}`
+				+ (sel ? '<svg class="check" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>' : '')
+				+ `</button>`;
+		}).join('');
+
+		updateCharCount();
+	}
+
+	function closeMenu() { $('target-menu').classList.remove('open'); menuHighlighted = null; }
+
+	$('target-btn').addEventListener('click', (e) => { e.stopPropagation(); $('target-menu').classList.toggle('open'); });
+	$('target-menu').addEventListener('click', (e) => {
+		const b = e.target.closest('button[data-p]');
+		if (!b) return;
+		e.stopPropagation();
+		const p = b.getAttribute('data-p') || null;
+		if (!isSupported(p)) { showError(titleFor(p)); return; }
+		target = p;
+		closeMenu();
+		renderTargets();
+		savePrefs();
+		$('message').focus();
+	});
+	$('target-btn').addEventListener('keydown', (e) => {
+		const list = targets();
+		if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+			e.preventDefault();
+			$('target-menu').classList.add('open');
+			const dir = e.key === 'ArrowUp' ? -1 : 1;
+			let i = list.indexOf(menuHighlighted === null && !$('target-menu').querySelector('.hl') ? target : menuHighlighted);
+			i = (i + dir + list.length) % list.length;
+			menuHighlighted = list[i];
+			renderTargets();
+		} else if (e.key === 'Enter' && $('target-menu').classList.contains('open')) {
+			e.preventDefault();
+			if (isSupported(menuHighlighted)) { target = menuHighlighted; savePrefs(); }
+			closeMenu();
+			renderTargets();
+		}
+	});
+	document.addEventListener('click', (e) => { if (!e.target.closest('.target-wrap')) closeMenu(); hideCtx(); });
+
+	/* ------------------------------------------------------------------ */
+	/* Sending                                                            */
+	/* ------------------------------------------------------------------ */
+
+	let errorTimer = null;
+	function showError(msg) {
+		const el = $('send-error');
+		el.textContent = msg;
+		el.style.display = 'block';
+		clearTimeout(errorTimer);
+		errorTimer = setTimeout(() => { el.style.display = 'none'; }, 7000);
+	}
+
+	function updateCharCount() {
+		const len = $('message').value.length;
+		const rumble = target === 'RUMBLE' || (target == null && rumbleUsable());
+		const el = $('char-count');
+		el.style.display = rumble && len > 0 ? 'block' : 'none';
+		el.textContent = `${len}/${rc.max_length}`;
+		el.classList.toggle('over', len > rc.max_length);
+	}
+
+	let nonceCounter = 0;
+	function sendToRumble(text) {
+		Widget.emit('rc:send', { message: text, nonce: String(++nonceCounter) });
+	}
+
+	function send() {
+		const message = $('message').value.trim();
+		if (!message) return;
+
+		const reply = replyTarget;
+		const replyPlatform = reply && reply.sender && reply.sender.platform;
+		// Rumble (and cross-platform replies) can't thread replies, so mention the person instead.
+		const mention = reply && reply.sender ? `@${reply.sender.username || reply.sender.displayname} ` : '';
+
+		if (target === 'RUMBLE') {
+			if (!rumbleUsable()) { showError(rumbleProblem()); return; }
+			sendToRumble((reply ? mention : '') + message);
+		} else if (target == null) {
+			// All: Caffeinated sends to every connected account like normal (Rumble isn't one of them)...
+			Koi.sendChat(null, message, 'CLIENT', reply && replyPlatform !== 'RUMBLE' ? reply.id : null, true);
+			// ...and Rumble gets it too.
+			if (rumbleUsable()) sendToRumble((reply ? mention : '') + message);
+		} else {
+			const sameP = reply && replyPlatform === target;
+			Koi.sendChat(target, (reply && !sameP ? mention : '') + message, 'CLIENT', sameP ? reply.id : null, true);
+		}
+
+		messageHistory.push({ message, target });
+		$('message').value = '';
+		historyIndex = -1;
+		messageEdited = false;
+		setReply(null);
+		updateCharCount();
+	}
+
+	$('send-btn').addEventListener('click', send);
+	$('message').addEventListener('input', updateCharCount);
+	$('message').addEventListener('keyup', () => { if ($('message').value.length === 0) messageEdited = false; });
+	$('message').addEventListener('keydown', (e) => {
+		switch (e.key) {
+			case 'Enter':
+				if (e.shiftKey) return;
+				e.preventDefault();
+				send();
+				return;
+			case 'ArrowUp':
+			case 'ArrowDown': {
+				if (messageEdited || messageHistory.length === 0) return;
+				e.preventDefault();
+				if (historyIndex === -1) historyIndex = messageHistory.length - 1;
+				else historyIndex = Math.max(0, Math.min(messageHistory.length - 1, historyIndex + (e.key === 'ArrowUp' ? -1 : 1)));
+				const h = messageHistory[historyIndex];
+				$('message').value = h.message;
+				if (targets().includes(h.target)) target = h.target;
+				renderTargets();
+				return;
+			}
+			case 'Escape':
+				setReply(null);
+				return;
+		}
+		messageEdited = true;
+	});
+
+	/* ------------------------------------------------------------------ */
+	/* Replies + context menu                                             */
+	/* ------------------------------------------------------------------ */
+
+	function setReply(event) {
+		replyTarget = event;
+		const bar = $('reply-bar');
+		if (!event) { bar.style.display = 'none'; return; }
+		$('reply-text').innerHTML = `Replying to ${userHtml(event.sender)}`;
+		bar.style.display = 'block';
+		$('message').focus();
+	}
+	$('reply-cancel').addEventListener('click', () => setReply(null));
+
+	function hideCtx() { $('ctx').style.display = 'none'; }
+
+	/* ------------------------------------------------------------------ */
+	/* User message history (click a username)                            */
+	/* ------------------------------------------------------------------ */
+
+	const historyList = $('history-list');
+	const historyScroller = $('history-scroller');
+	let historyUpid = null;
+	let savedChatScroll = 0;
+
+	function openHistory(upid) {
+		const user = knownUsers[upid];
+		if (!user) return;
+		hideCtx();
+
+		if (!historyUpid) savedChatScroll = scroller.scrollTop;
+		historyUpid = upid;
+
+		// Identity: avatar, platform icon, badges, name.
+		const av = $('history-avatar');
+		const initial = esc(String(user.displayname || user.username || '?').charAt(0).toUpperCase());
+		av.style.background = PLATFORM_COLORS[user.platform] || 'var(--base6)';
+		av.innerHTML = user.image_link && !String(user.image_link).startsWith('data:image/svg+xml')
+			? `<img alt="" src="${esc(user.image_link)}" referrerpolicy="no-referrer" onerror="this.parentNode.textContent='${initial}'">`
+			: initial;
+
+		$('history-id').querySelector('.who').innerHTML = userHtml(user);
+		const platformName = PLATFORM_NAMES[user.platform] || user.platform || '';
+		$('history-id').querySelector('.sub').textContent =
+			(user.username && user.username !== user.displayname ? '@' + user.username + ' · ' : '') + platformName + ' · message history';
+		$('history-profile').style.display = user.link ? '' : 'none';
+		$('history-profile').onclick = () => openUrl(user.link);
+
+		historyList.innerHTML = '';
+		historyList.style.fontSize = chatBox.style.fontSize;
+		let count = 0;
+		for (const { event } of chatHistory) {
+			const u = userOf(event);
+			if (u && u.UPID === upid && mountEvent(event, historyList)) count++;
+		}
+		$('history-empty').style.display = count ? 'none' : 'block';
+
+		root.classList.add('viewing-history');
+		requestAnimationFrame(() => { historyScroller.scrollTop = historyScroller.scrollHeight; });
+	}
+
+	function closeHistory() {
+		if (!historyUpid) return;
+		historyUpid = null;
+		root.classList.remove('viewing-history');
+		historyList.innerHTML = '';
+		// Back to exactly where you were in the chat (or the bottom, if you were following).
+		requestAnimationFrame(() => {
+			if (isAtBottom) scroller.scrollTop = scroller.scrollHeight;
+			else scroller.scrollTop = savedChatScroll;
+			lastScrollTop = scroller.scrollTop;
+			$('jump').classList.toggle('show', !isAtBottom);
+		});
+	}
+
+	$('history-back').addEventListener('click', closeHistory);
+
+	function openUrl(url) {
+		if (!url) return;
+		try { openLink(url); } catch (err) { try { Widget.emit('openLink', url); } catch (err2) {} }
+	}
+
+	function onContextMenu(e) {
+		const li = e.target.closest('li.message-container');
+		if (!li || !li._event || li._event.event_type !== 'RICH_MESSAGE') return;
+		e.preventDefault();
+		const ev = li._event;
+		const p = ev.sender && ev.sender.platform;
+		const f = features[p] || [];
+		const items = [['reply', 'Reply', '']];
+		items.push(['copy', 'Copy message', '']);
+		if (f.includes('MESSAGE_UPVOTE')) items.push(['upvote', 'Upvote', '']);
+		if (f.includes('MESSAGE_DELETION') && ev.is_visible !== false) items.push(['delete', 'Delete Message', 'danger']);
+
+		const ctx = $('ctx');
+		ctx.innerHTML = items.map(([a, t, c]) => `<button data-a="${a}" class="${c}">${t}</button>`).join('');
+		ctx.style.display = 'block';
+		const x = Math.min(e.clientX, window.innerWidth - ctx.offsetWidth - 4);
+		const y = Math.min(e.clientY, window.innerHeight - ctx.offsetHeight - 4);
+		ctx.style.left = x + 'px';
+		ctx.style.top = y + 'px';
+		ctx._event = ev;
+	}
+	chatBox.addEventListener('contextmenu', onContextMenu);
+	historyList.addEventListener('contextmenu', onContextMenu);
+
+	$('ctx').addEventListener('click', (e) => {
+		const b = e.target.closest('button[data-a]');
+		if (!b) return;
+		const ev = $('ctx')._event;
+		hideCtx();
+		switch (b.getAttribute('data-a')) {
+			case 'reply': setReply(ev); break;
+			case 'copy': try { navigator.clipboard.writeText(ev.raw || ''); } catch (err) {} break;
+			case 'upvote': Koi.upvoteChat(ev.sender.platform, ev.id); break;
+			case 'delete': Koi.deleteChat(ev.sender.platform, ev.id, true); break;
+		}
+	});
+
+	function onListClick(e) {
+		const jump = e.target.closest('[data-jump]');
+		if (jump) {
+			e.preventDefault();
+			const t = chatElements[jump.getAttribute('data-jump')];
+			closeHistory();
+			if (t) {
+				t.element.scrollIntoView();
+				t.element.classList.add('flash');
+				setTimeout(() => t.element.classList.remove('flash'), 750);
+			}
+			return;
+		}
+		const name = e.target.closest('[data-upid]');
+		if (name) {
+			e.preventDefault();
+			openHistory(name.getAttribute('data-upid'));
+		}
+	}
+	chatBox.addEventListener('click', onListClick);
+	historyList.addEventListener('click', onListClick);
+
+	/* ------------------------------------------------------------------ */
+	/* Wiring to Caffeinated                                              */
+	/* ------------------------------------------------------------------ */
+
+	function onStatics() {
+		userStates = Koi.userStates || {};
+		features = Koi.features || {};
+		renderTargets();
+	}
+
+	let started = false;
+	function start() {
+		if (started) return;
+		started = true;
+
+		// Preferences are stored exactly like the stock dock (in this dock's settings).
+		const saved = (typeof Widget.getSetting === 'function' && Widget.getSetting('preferences')) || {};
+		prefs = Object.assign({}, DEFAULT_PREFS, saved);
+		if (prefs.inputBoxPreferences && 'platform' in prefs.inputBoxPreferences) target = prefs.inputBoxPreferences.platform || null;
+		applyPrefs();
+		loadVoices();
+
+		try {
+			if (typeof App !== 'undefined' && App.on) {
+				App.on('appearance', (a) => document.documentElement.setAttribute('data-appearance', a));
+			}
+		} catch (e) {}
+
+		Widget.on('rc:state', (s) => {
+			rc = Object.assign(rc, s || {});
+			renderTargets();
+			if ($('modal-bg').classList.contains('open')) renderAccount(s && s.error);
+		});
+		Widget.on('rc:send_result', (r) => {
+			if (r && !r.ok) showError('Rumble: ' + (r.error || 'Message not sent.'));
+		});
+
+		Koi.on('koi_statics', onStatics);
+		onStatics();
+
+		for (const event of Koi.eventHistory || []) {
+			processEvent(Object.assign({}, event, { is_historical: true }));
+		}
+		jumpToBottom(false);
+
+		// Every live event, the same feed the stock dock listens to.
+		Koi.on('*', (type, event) => {
+			if (type === 'koi_statics') return;
+			processEvent(event);
+		});
+
+		Widget.emit('rc:hello');
+	}
+
+	function boot() {
+		if (typeof Koi !== 'undefined' && typeof Widget !== 'undefined') {
+			Widget.on('init', start);
+			// If init already happened, Widget.on('init') re-fires; this is a safety net.
+			setTimeout(() => { if (Widget.connectionId) start(); }, 500);
+		} else {
+			setTimeout(boot, 25);
+		}
+	}
+	boot();
+})();
+</script>
+</body>
+</html>
