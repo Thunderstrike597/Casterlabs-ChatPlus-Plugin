@@ -1,0 +1,1 @@
+Put icon.png (or icon.svg / .webp / .gif / .jpg) in this folder, then rebuild.
