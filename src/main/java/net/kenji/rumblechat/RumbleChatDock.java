@@ -80,6 +80,16 @@ public class RumbleChatDock extends Widget {
             if (e != null && e.isJsonObject()) WORKER.submit(() -> this.plugin.getSpotlight().show(e.getAsObject()));
         });
         instance.on("cp:spotlight_clear", () -> WORKER.submit(() -> this.plugin.getSpotlight().clear()));
+
+        // Caffeinated fires the page's "init" BEFORE it reports the page READY (which is when
+        // this method runs), so the page's startup rc:hello can arrive before the handlers above
+        // exist and get dropped. Push the starting state ourselves now that the page is ready.
+        try {
+            this.sendState(instance);
+            this.sendSpotlight(instance);
+        } catch (Throwable t) {
+            RumbleKoiBridge.LOG.accept("Couldn't send the dock its starting state: " + t, null);
+        }
     }
 
     private void sendSpotlight(WidgetInstance instance) {

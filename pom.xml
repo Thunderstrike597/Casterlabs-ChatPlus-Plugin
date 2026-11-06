@@ -6,7 +6,7 @@
 
 	<groupId>net.kenji</groupId>
 	<artifactId>chatplus</artifactId>
-	<version>1.1.0</version>
+	<version>1.1.1</version>
 	<name>CasterLabs - ChatPlus</name>
 
 	<properties>
