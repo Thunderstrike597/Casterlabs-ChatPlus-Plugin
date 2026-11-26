@@ -24,6 +24,7 @@ import co.casterlabs.caffeinated.pluginsdk.widgets.settings.WidgetSettingsLayout
 import co.casterlabs.caffeinated.pluginsdk.widgets.settings.WidgetSettingsSection;
 import lombok.NonNull;
 import net.kenji.rumblechat.rumble.RumbleChatClient;
+import net.kenji.rumblechat.rumble.RumbleApiWatcher;
 import net.kenji.rumblechat.rumble.RumbleHttp;
 import net.kenji.rumblechat.rumble.RumbleIds;
 import net.kenji.rumblechat.rumble.RumbleLiveStreamApi;
@@ -59,6 +60,12 @@ public class RumbleChatPlugin extends CaffeinatedPlugin {
     private volatile @Nullable String dinkDataUri;
     private volatile @Nullable Config activeConfig;
     private ChatSpotlightCompat spotlight;
+
+    /* Rumble follows/subs (Live Stream API polling) + the public compat API other plugins use. */
+    private volatile @Nullable RumbleApiWatcher followWatcher;
+    private String lastFollowConfig = "";
+    private final Map<String, java.util.function.Consumer<Map<String, Object>>> followListeners = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, java.util.function.Consumer<Map<String, Object>>> subListeners = new java.util.concurrent.ConcurrentHashMap<>();
 
     private static final long STREAM_RECHECK_SECONDS = 30;
     private static final java.util.concurrent.ScheduledExecutorService RECHECK = java.util.concurrent.Executors.newSingleThreadScheduledExecutor((r) -> {
@@ -100,6 +107,7 @@ public class RumbleChatPlugin extends CaffeinatedPlugin {
         this.createSettingsApplet();
         this.setSettingsLayout(buildLayout());
         this.applySettings(true);
+        this.applyFollowSettings(true);
         this.spotlight.setOptions(ChatSpotlightCompat.Options.read(this.settings()));
         this.getLogger().info("ChatPlus loaded.");
     }
@@ -107,6 +115,7 @@ public class RumbleChatPlugin extends CaffeinatedPlugin {
     @Override
     protected void onSettingsUpdate() {
         this.applySettings(false);
+        this.applyFollowSettings(false);
         // Compat options never restart the Rumble connection.
         if (this.spotlight != null) this.spotlight.setOptions(ChatSpotlightCompat.Options.read(this.settings()));
     }
@@ -114,6 +123,7 @@ public class RumbleChatPlugin extends CaffeinatedPlugin {
     @Override
     public void onClose() {
         this.stop();
+        this.stopFollowWatcher();
         if (this.spotlight != null) this.spotlight.close();
     }
 
@@ -129,7 +139,7 @@ public class RumbleChatPlugin extends CaffeinatedPlugin {
 
     @Override
     public String getVersion() {
-        return "1.1.1";
+        return "1.3.0";
     }
 
     @Override
@@ -181,6 +191,14 @@ public class RumbleChatPlugin extends CaffeinatedPlugin {
                     .addItem(WidgetSettingsItem.asCheckbox("show_badges", "Show Rumble badges", true))
                     .addItem(WidgetSettingsItem.asCheckbox("show_history", "Show messages sent before connecting", false))
                     .addItem(WidgetSettingsItem.asCheckbox("status_messages", "Post connect / disconnect notices in chat", true))
+            )
+            .addSection(
+                new WidgetSettingsSection("follows", "Rumble Follows & Subs")
+                    .addItem(WidgetSettingsItem.asCheckbox("enabled", "Detect Rumble follows (uses the Live Stream API URL above, in either mode)", true))
+                    .addItem(WidgetSettingsItem.asCheckbox("show_in_chat", "Show follows in chat (\"X just followed!\")", true))
+                    .addItem(WidgetSettingsItem.asCheckbox("subs_enabled", "Detect paid Rumble subs and gifted subs", true))
+                    .addItem(WidgetSettingsItem.asCheckbox("subs_in_chat", "Show subs in chat (\"X just subscribed!\")", true))
+                    .addItem(WidgetSettingsItem.asRange("interval", "Check for new followers / subs every (seconds)", 10, 1, 5, 60))
             )
             // Compat with Chat Spotlight: pick the on-screen message from the ChatPlus dock.
             // Safe to turn on without Chat Spotlight installed; the dock just acts normally.
@@ -399,6 +417,186 @@ public class RumbleChatPlugin extends CaffeinatedPlugin {
             this.currentChatId = 0;
             this.broadcastDockState();
         }
+    }
+
+    /* ---------------- */
+    /* Rumble follows   */
+    /* ---------------- */
+
+    private synchronized void applyFollowSettings(boolean force) {
+        WidgetSettings s = this.settings();
+        boolean follows = s.getBoolean("follows.enabled", true);
+        boolean subs = s.getBoolean("follows.subs_enabled", true);
+        String apiUrl = s.getString("connection.api_url", "").trim();
+        int interval = Math.max(5, s.getNumber("follows.interval", 10).intValue());
+        String fp = follows + "|" + subs + "|" + apiUrl + "|" + interval;
+        if (!force && fp.equals(this.lastFollowConfig)) return;
+        this.lastFollowConfig = fp;
+
+        this.stopFollowWatcher();
+        if (!follows && !subs) return;
+        if (apiUrl.isEmpty()) {
+            this.getLogger().info("Rumble follow/sub detection needs the Live Stream API URL (Settings > ChatPlus).");
+            return;
+        }
+
+        RumbleApiWatcher w = new RumbleApiWatcher(apiUrl, interval * 1000L, (msg) -> this.getLogger().info("%s", msg))
+            .onFollow(follows ? this::onRumbleFollow : null)
+            .onSubscriber(subs ? this::onRumbleSubscriber : null)
+            .onGiftedSubs(subs ? this::onRumbleGiftedSubs : null);
+        this.followWatcher = w;
+        w.start();
+    }
+
+    private synchronized void stopFollowWatcher() {
+        RumbleApiWatcher w = this.followWatcher;
+        if (w != null) w.stop();
+        this.followWatcher = null;
+    }
+
+    private void onRumbleFollow(RumbleApiWatcher.Follow f) {
+        this.getLogger().info("New Rumble follower: %s", f.username);
+
+        if (this.settings().getBoolean("follows.show_in_chat", true)) {
+            RumbleKoiBridge.postFollow(this.koiPlatform(), f.username, this.koiIcon());
+        }
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("platform", "RUMBLE");
+        data.put("username", f.username);
+        data.put("displayname", f.username);
+        data.put("followed_on", f.followedOn);
+        data.put("link", "https://rumble.com/user/" + f.username);
+        data.put("koi_follower_id", RumbleKoiBridge.FOLLOWER_ID_PREFIX + f.username.toLowerCase());
+        data.put("test", false);
+        fireListeners(this.followListeners, data);
+    }
+
+    private void onRumbleSubscriber(RumbleApiWatcher.Subscriber sub) {
+        this.getLogger().info("New Rumble subscriber: %s ($%.2f)", sub.username, sub.amountCents / 100.0);
+        this.dispatchSub(sub.username, "SUB", 1, sub.amountCents, "", sub.subscribedOn, false);
+    }
+
+    private void onRumbleGiftedSubs(RumbleApiWatcher.GiftedSubs g) {
+        this.getLogger().info("New Rumble gifted subs: %s gifted %d (%s)", g.purchasedBy, g.totalGifts, g.giftType);
+        this.dispatchSub(g.purchasedBy, "SUBGIFT", g.totalGifts, -1, g.giftType, "", false);
+    }
+
+    private void dispatchSub(String username, String type, int giftCount, int amountCents, String giftType, String subscribedOn, boolean test) {
+        if (this.settings().getBoolean("follows.subs_in_chat", true)) {
+            RumbleKoiBridge.postSubscription(this.koiPlatform(), username, type, giftCount, this.koiIcon());
+        }
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("platform", "RUMBLE");
+        data.put("type", type); // "SUB" or "SUBGIFT"
+        data.put("username", username);
+        data.put("displayname", username);
+        data.put("gift_count", giftCount); // 1 for a normal sub
+        data.put("gift_type", giftType);
+        data.put("amount_cents", amountCents); // -1 when Rumble doesn't say (gifts)
+        data.put("subscribed_on", subscribedOn);
+        data.put("link", "https://rumble.com/user/" + username);
+        data.put("koi_subscriber_id", RumbleKoiBridge.SUBSCRIBER_ID_PREFIX + username.toLowerCase());
+        data.put("test", test);
+        fireListeners(this.subListeners, data);
+    }
+
+    private String koiPlatform() {
+        return resolvePlatform(this.settings().getString("display.platform_tag", "rumble"));
+    }
+
+    private @Nullable String koiIcon() {
+        return this.settings().getBoolean("display.show_icon", true) ? this.iconDataUri : null;
+    }
+
+    private void fireListeners(Map<String, java.util.function.Consumer<Map<String, Object>>> listeners, Map<String, Object> data) {
+        for (Map.Entry<String, java.util.function.Consumer<Map<String, Object>>> e : listeners.entrySet()) {
+            try {
+                e.getValue().accept(java.util.Collections.unmodifiableMap(new LinkedHashMap<>(data)));
+            } catch (Throwable t) {
+                this.getLogger().warn("Listener '%s' failed: %s", e.getKey(), t);
+            }
+        }
+    }
+
+    /* ---------------- */
+    /* Public compat API */
+    /* ---------------- */
+    // Other plugins (e.g. Widgets Enhanced) find this plugin by ID ("net.kenji.rumble_chat")
+    // and call these by reflection. Only JDK types cross the boundary, so nothing
+    // breaks when either plugin is missing or a different version.
+
+    /** Bumped when the compat API changes. 1 = follow listeners (1.2.0), 2 = sub listeners (1.3.0). */
+    public int compatApiVersion() {
+        return 2;
+    }
+
+    /**
+     * Registers a listener for new Rumble followers. Calling again with the same
+     * ownerId replaces the previous listener. The map holds: platform ("RUMBLE"),
+     * username, displayname, followed_on, link, koi_follower_id, test.
+     */
+    public void compatAddFollowListener(String ownerId, java.util.function.Consumer<Map<String, Object>> listener) {
+        if (ownerId == null || listener == null) return;
+        this.followListeners.put(ownerId, listener);
+    }
+
+    public void compatRemoveFollowListener(String ownerId) {
+        if (ownerId != null) this.followListeners.remove(ownerId);
+    }
+
+    /**
+     * Registers a listener for paid Rumble subs and gifted subs (1.3.0+). The map
+     * holds: platform ("RUMBLE"), type ("SUB" or "SUBGIFT"), username (the buyer for
+     * gifts), displayname, gift_count, gift_type, amount_cents (-1 if unknown),
+     * subscribed_on, link, koi_subscriber_id, test.
+     */
+    public void compatAddSubscriptionListener(String ownerId, java.util.function.Consumer<Map<String, Object>> listener) {
+        if (ownerId == null || listener == null) return;
+        this.subListeners.put(ownerId, listener);
+    }
+
+    public void compatRemoveSubscriptionListener(String ownerId) {
+        if (ownerId != null) this.subListeners.remove(ownerId);
+    }
+
+    /** True when follow detection is switched on and the Live Stream API URL is set. */
+    public boolean compatRumbleFollowsAvailable() {
+        RumbleApiWatcher w = this.followWatcher;
+        return w != null && w.isRunning() && this.settings().getBoolean("follows.enabled", true);
+    }
+
+    /** True when sub detection is switched on and the Live Stream API URL is set. */
+    public boolean compatRumbleSubsAvailable() {
+        RumbleApiWatcher w = this.followWatcher;
+        return w != null && w.isRunning() && this.settings().getBoolean("follows.subs_enabled", true);
+    }
+
+    /** Fake sub (giftCount <= 1) or gifted subs (giftCount > 1) to every listener (and chat, if on). */
+    public void compatTestSubscription(String username, int giftCount) {
+        String name = username == null || username.isEmpty() ? "RumbleTester" : username;
+        if (giftCount > 1) {
+            this.dispatchSub(name, "SUBGIFT", giftCount, -1, "test", "", true);
+        } else {
+            this.dispatchSub(name, "SUB", 1, 500, "", java.time.Instant.now().toString(), true);
+        }
+    }
+
+    /** The private Live Stream API URL from Settings > ChatPlus (null if not set). Handle like a password. */
+    public @Nullable String compatRumbleApiUrl() {
+        String url = this.settings().getString("connection.api_url", "").trim();
+        return url.isEmpty() ? null : url;
+    }
+
+    /** The Rumble chat ID we're connected to right now (0 = none). */
+    public long compatCurrentChatId() {
+        return this.currentChatId;
+    }
+
+    /** Sends a fake Rumble follow to every listener (and chat, if that option is on). */
+    public void compatTestFollow(String username) {
+        this.onRumbleFollow(new RumbleApiWatcher.Follow(username == null || username.isEmpty() ? "RumbleTester" : username, java.time.Instant.now().toString()));
     }
 
     /* ---------------- */

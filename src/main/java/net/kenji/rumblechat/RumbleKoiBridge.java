@@ -197,6 +197,77 @@ public class RumbleKoiBridge {
         }
     }
 
+    /** Prefix of the follower ID on Rumble follow events; other plugins use it to spot them. */
+    public static final String FOLLOWER_ID_PREFIX = "rumble-follow-";
+
+    /**
+     * Posts a Rumble follow into Caffeinated as a normal Koi FOLLOW event, so
+     * docks show "X just followed!" like they do for Twitch.
+     */
+    public static void postFollow(String platform, String username, @Nullable String platformIcon) {
+        try {
+            Map<String, Object> follower = profile(platform, FOLLOWER_ID_PREFIX + username.toLowerCase());
+            follower.put("roles", Collections.singletonList("FOLLOWER"));
+            follower.put("badges", platformIcon == null ? Collections.emptyList() : Collections.singletonList(platformIcon));
+            follower.put("color", "#85c742");
+            follower.put("username", username);
+            follower.put("displayname", username);
+            follower.put("bio", "");
+            follower.put("link", RUMBLE + "/user/" + username);
+            follower.put("image_link", DEFAULT_AVATAR);
+            follower.put("followers_count", -1);
+            follower.put("subscriber_count", -1);
+
+            Map<String, Object> e = JsonOut.obj();
+            e.put("event_type", "FOLLOW");
+            e.put("streamer", profile(platform, "rumble-chat-plugin"));
+            e.put("timestamp", Instant.now().toString());
+            e.put("follower", follower);
+            KoiDispatch.send(JsonOut.toJsonObject(e), false);
+        } catch (Throwable t) {
+            LOG.accept("Failed to post Rumble follow: " + t, t);
+        }
+    }
+
+    /** Prefix of the subscriber ID on Rumble sub events; other plugins use it to spot them. */
+    public static final String SUBSCRIBER_ID_PREFIX = "rumble-sub-";
+
+    /**
+     * Posts a Rumble sub / gifted subs into Caffeinated as a Koi SUBSCRIPTION event,
+     * so docks show it like a Twitch sub. Gift recipients are picked at random by
+     * Rumble and aren't in the API, so a gift has no gift_recipient.
+     */
+    public static void postSubscription(String platform, String username, String type, int giftCount, @Nullable String platformIcon) {
+        try {
+            Map<String, Object> subscriber = profile(platform, SUBSCRIBER_ID_PREFIX + username.toLowerCase());
+            subscriber.put("roles", Collections.singletonList("SUBSCRIBER"));
+            subscriber.put("badges", platformIcon == null ? Collections.emptyList() : Collections.singletonList(platformIcon));
+            subscriber.put("color", "#85c742");
+            subscriber.put("username", username);
+            subscriber.put("displayname", username);
+            subscriber.put("bio", "");
+            subscriber.put("link", RUMBLE + "/user/" + username);
+            subscriber.put("image_link", DEFAULT_AVATAR);
+            subscriber.put("followers_count", -1);
+            subscriber.put("subscriber_count", -1);
+
+            Map<String, Object> e = JsonOut.obj();
+            e.put("event_type", "SUBSCRIPTION");
+            e.put("streamer", profile(platform, "rumble-chat-plugin"));
+            e.put("timestamp", Instant.now().toString());
+            e.put("subscriber", subscriber);
+            e.put("gift_recipient", null);
+            e.put("months", 1);
+            e.put("months_purchased", Math.max(1, giftCount));
+            e.put("months_streak", 1);
+            e.put("sub_type", type);
+            e.put("sub_level", "UNKNOWN");
+            KoiDispatch.send(JsonOut.toJsonObject(e), false);
+        } catch (Throwable t) {
+            LOG.accept("Failed to post Rumble sub: " + t, t);
+        }
+    }
+
     /** A RICH_MESSAGE event in Koi's wire format. */
     private static Map<String, Object> richMessage(Map<String, Object> streamer, Map<String, Object> sender, String text,
         List<Object> donations, String id, Instant time, boolean highlighted) {

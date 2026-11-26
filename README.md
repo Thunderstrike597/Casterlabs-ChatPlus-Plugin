@@ -44,6 +44,45 @@ Accepts any of:
 Note: on Rumble every livestream is a new video with its own chat ID, so in this mode you'd
 paste a new URL each stream. That's why auto-detect is the default.
 
+### Rumble follows (1.2.0) and paid subs (1.3.0)
+Settings → ChatPlus → **Rumble Follows**. Uses the same Live Stream API URL as auto-detect (fill it in
+even if you use "A specific stream / chat URL" mode). Rumble's API has no push events, so the plugin
+checks the 50 most recent followers every few seconds.
+
+| Option | Default | |
+|---|---|---|
+| Detect Rumble follows | on | Followers you already had when Caffeinated started never alert. Each username alerts once per session (no refollow spam). Works whether or not you're live. |
+| Show follows in chat | on | Posts a normal Koi FOLLOW event, so docks show "X just followed!". With *Show messages as platform = Custom Integration*, the stock Follow Alert also fires for it. |
+| Detect paid Rumble subs and gifted subs | on | New in 1.3.0. Paid channel subs (with amount) and gifted subs (buyer + how many) from the same API. Existing subs when Caffeinated starts never alert; a renewal counts as a new sub. |
+| Show subs in chat | on | Posts a Koi SUBSCRIPTION event ("X just subscribed!"). |
+| Check every (seconds) | 10 | 5-60, for follows and subs. |
+
+Rumble follows don't trigger the **stock** Follow Alert with the Rumble platform tag (Caffeinated's
+platform picker has no Rumble). Use **Widgets Enhanced → Enhanced Follow Alert**, which hooks in through
+the compat API below.
+
+### Compat API for other plugins (1.2.0+)
+Find the plugin by ID (`net.kenji.rumble_chat`) and call these by reflection. Only JDK types cross the
+boundary, so neither plugin needs the other to load:
+
+| Method | |
+|---|---|
+| `int compatApiVersion()` | `2` (1.3.0; `1` was 1.2.0) |
+| `void compatAddFollowListener(String ownerId, Consumer<Map<String,Object>> l)` | New Rumble follower → map with `platform` (`RUMBLE`), `username`, `displayname`, `followed_on`, `link`, `koi_follower_id`, `test`. Same ownerId replaces the old listener. |
+| `void compatRemoveFollowListener(String ownerId)` | |
+| `boolean compatRumbleFollowsAvailable()` | Detection on and API URL set. |
+| `void compatAddSubscriptionListener(String ownerId, Consumer<Map<String,Object>> l)` | 1.3.0+. New paid sub / gifted subs → map with `platform`, `type` (`SUB`/`SUBGIFT`), `username` (buyer for gifts), `displayname`, `gift_count`, `gift_type`, `amount_cents` (-1 if unknown), `subscribed_on`, `link`, `koi_subscriber_id`, `test`. |
+| `void compatRemoveSubscriptionListener(String ownerId)` | |
+| `boolean compatRumbleSubsAvailable()` | Sub detection on and API URL set. |
+| `void compatTestSubscription(String username, int giftCount)` | Fake sub (1) or gifted subs (>1). |
+| `String compatRumbleApiUrl()` | The private Live Stream API URL, or null. Treat like a password. |
+| `long compatCurrentChatId()` | Connected Rumble chat ID, 0 if none. |
+| `void compatTestFollow(String username)` | Fires a fake follow to listeners (and chat). |
+
+Koi FOLLOW / SUBSCRIPTION events posted by ChatPlus have a user ID starting with `rumble-follow-` /
+`rumble-sub-`, so a plugin that uses the listeners can ignore the Koi copy and avoid double alerts.
+Rants are posted as normal donation chat messages; their streamer ID starts with `rumble-stream-`.
+
 ### Display options
 | Option | Default | |
 |---|---|---|
